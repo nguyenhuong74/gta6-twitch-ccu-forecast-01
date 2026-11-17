@@ -100,6 +100,17 @@ by SPREAD_CAL).  The shrink is 0.35: at that value the 90% band covered
 83 of the 92 practice hours (90.2%), the honest level the scoring rule
 rewards.
 
+Robustness: every viewers count is validated as a positive finite
+number before it is used.  A single NaN or inf point in a donor's
+release-day curve used to poison the log-ratio fit and crash the run in
+the rounding step (``math.floor(NaN)``), which would invalidate the case
+and forfeit the entry; corrupt points are now skipped, so the donor
+simply contributes its remaining hours (or drops out if too few are
+left).  Likewise a corrupt hour-1 print falls through to the last valid
+pre-checkpoint hourly point instead of collapsing the forecast to a
+scale of 1.  Valid inputs are unaffected: the practice-case forecasts
+are byte-identical with and without these checks.
+
 Python 3.13, standard library only, no network, deterministic: the same
 input file always produces byte-identical output.  Reads every ``*.in``
 in ``$MAKEFUN_INPUT_DIR`` (else ``/input``) and writes ``/output/<id>.out``
@@ -181,7 +192,13 @@ def release_day_curve(comp):
             viewers = point["viewers"]
         except (KeyError, TypeError, ValueError):
             continue
-        if viewers is None or viewers <= 0:
+        # Reject anything that is not a positive finite count: a NaN or
+        # inf point would poison the log-ratio fit and crash the run
+        # (math.floor(NaN) in the rounding step), invalidating the case.
+        # The type check comes first: comparing a string with <= raises.
+        if (not isinstance(viewers, (int, float))
+                or isinstance(viewers, bool)
+                or not math.isfinite(viewers) or viewers <= 0):
             continue
         hour = int((when - day_start).total_seconds() // 3600) + 1
         if 1 <= hour <= 24:
@@ -190,15 +207,27 @@ def release_day_curve(comp):
 
 
 def hour1_print(case):
-    """Hour 1's print: the known row, else the last pre-checkpoint point."""
+    """Hour 1's print: the known row, else the last pre-checkpoint point.
+
+    A known row whose viewers count is missing, non-numeric or non-finite
+    is treated as absent, so the estimate falls through to the history
+    instead of silently collapsing to 1 (a NaN print used to do exactly
+    that: max(1, NaN) is 1).  The history scan likewise skips corrupt
+    points, walking back from the last point to the newest valid one.
+    """
     for row in case.get("known") or []:
-        if row.get("hour") == 1 and row.get("viewers") is not None:
-            return max(1, row["viewers"])
+        viewers = row.get("viewers")
+        if (row.get("hour") == 1 and isinstance(viewers, (int, float))
+                and not isinstance(viewers, bool)
+                and math.isfinite(viewers) and viewers > 0):
+            return max(1, viewers)
     hourly = case.get("history_hourly") or []
-    if hourly:
-        last = hourly[-1].get("viewers")
-        if last:
-            return max(1, last)
+    for point in reversed(hourly):
+        viewers = point.get("viewers")
+        if (isinstance(viewers, (int, float))
+                and not isinstance(viewers, bool)
+                and math.isfinite(viewers) and viewers > 0):
+            return max(1, viewers)
     return 1
 
 
