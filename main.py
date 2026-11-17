@@ -30,10 +30,26 @@ property of the launch type, not of any one game.  GTA VI is the same type
 (console-only, rolling midnight local unlock, single-player), so the same
 calibration applies to the final case.
 
+The spread is recalibrated per hour as well (SPREAD_CAL, hours 2..24).
+The donor residual spread is the wrong width in a systematic way: the
+donor curves keep diverging over the day, so the raw spread grows with
+the hour, but a real console launch's own curve is much tighter late in
+the day, once the evening peak is set, and looser in the early hours,
+where the unlock waves land at different times.  SPREAD_CAL is fitted
+from leave-one-case-out residuals on the four practice cases: for each
+hour, the ratio of the LOOCV residual spread to the model's own spread,
+shrunk halfway toward 1 in log space (four cases is too few to trust a
+raw per-hour ratio) and clamped to [0.6, 1.6].  It widens hours 2-5 and
+12-13, where the model is over-confident, and narrows hours 19-24,
+where it is far too wide.  With it, the practice loss falls from 0.1076
+to 0.1004, improving every practice case (p00 0.0909 -> 0.0867,
+p01 0.1292 -> 0.1244, p02 0.0736 -> 0.0671, p03 0.1367 -> 0.1233).
+
 Quantiles are p1 * exp(centre + CAL[h] + z_tau * sd_h), with z the standard
 normal quantiles at 0.05/0.25/0.5/0.75/0.95 and sd_h the residual spread
-(floored at 0.05, shrunk by SPREAD_SHRINK).  A floor of 0.05 on sd and the
-shrink keep the bands honest without letting one wild donor blow them up.
+(floored at 0.05, shrunk by SPREAD_SHRINK, recalibrated by SPREAD_CAL).
+A floor of 0.05 on sd and the shrink keep the bands honest without letting
+one wild donor blow them up.
 
 Python 3.13, standard library only, no network, deterministic: the same
 input file always produces byte-identical output.  Reads every *.in in
@@ -63,7 +79,12 @@ BANDWIDTH = 1.5
 RIDGE = 1.0
 # The residual spread is multiplied by this: the raw donor spread is wider
 # than a single launch's own uncertainty once the scale is accounted for.
-SPREAD_SHRINK = 0.45
+# Set to 0.35 (from 0.45) after the per-hour spread recalibration: with
+# SPREAD_CAL the 90% band covered 89 of 92 practice hours (96.7%), i.e.
+# the bands were still too wide and paid pinball loss at every hour; at
+# 0.35 the coverage is 83/92 (90.2%), the honest level the scoring rule
+# rewards, and the practice loss falls from 0.1004 to 0.0975.
+SPREAD_SHRINK = 0.35
 # Floor on the log-spread of any hour, so a lucky-tight donor set never
 # claims more precision than the data supports.
 SPREAD_FLOOR = 0.05
@@ -74,6 +95,14 @@ CAL = [
     -0.1761, -0.1905, -0.0502, 0.2765, 0.4622, 0.4093, 0.2909, 0.1869,
     0.1012, 0.0056, -0.0798, -0.0643, 0.0342, 0.1250, 0.2034, 0.3059,
     0.3702, 0.3417, 0.3054, 0.2958, 0.2735, 0.2437, 0.2330,
+]
+
+# Per-hour spread recalibration, hours 2..24 (see the module docstring).
+# Multiplies the model spread: >1 widens, <1 narrows.
+SPREAD_CAL = [
+    1.273, 1.419, 1.220, 1.426, 0.792, 0.707, 0.860, 0.846,
+    0.854, 1.021, 1.411, 1.247, 1.091, 0.997, 0.971, 1.036,
+    0.985, 0.737, 0.681, 0.600, 0.600, 0.600, 0.678,
 ]
 
 # Fallback spread (log units per sqrt-hour) when an hour has no donor data
@@ -193,6 +222,7 @@ def forecast_case(case, name):
             centre, spread = 0.0, FALLBACK_SIGMA * math.sqrt(hour - 1)
         else:
             centre, spread = fit
+            spread *= SPREAD_CAL[hour - 2]
         centre += CAL[hour - 2]
         median = max(p1, 1) * math.exp(centre)
         quantiles = []
